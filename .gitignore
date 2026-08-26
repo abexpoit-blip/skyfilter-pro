@@ -1,0 +1,4 @@
+__pycache__/
+*.pyc
+write_js.py
+write_app_js.py
