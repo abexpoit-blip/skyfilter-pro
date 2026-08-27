@@ -1,21 +1,20 @@
 // ==========================================================================
-// SkyFilter PRO v4.2 - Advanced Multi-Engine & History Wiping Controller
+// SkyFilter PRO v4.3 - Production Multi-Format Parser & Filter Engine
 // ==========================================================================
 
 const STORAGE_KEY_HISTORY = 'skyfilter_uid_history_db';
 
 const state = {
-    pendingFiles: [],            // Files currently held in queue
-    rawUploadedFiles: [],        // Raw file objects for instant re-processing
-    records: [],                 // Active clean records
-    activeUidSet: new Set(),     // Active session unique UIDs
+    pendingFiles: [],            // Uploaded files in current session
+    rawUploadedFiles: [],        // Raw file objects
+    records: [],                 // Active clean records { id, uid, pass, cookies, series, isDead, sourceFile }
+    activeUidSet: new Set(),     // Unique UIDs in current session
     historicalUidSet: new Set(), // Persistent UID database
     loadedFileSignatures: new Set(),
     pastedDeadUids: new Set(),
     
     totalRawRowsUploaded: 0,
     duplicateUidsRemoved: 0,
-    skippedFilesCount: 0,
     deletedDeadCount: 0,
     
     loadedFiles: [],
@@ -93,7 +92,7 @@ const elements = {
     toastMessage: document.getElementById('toast-message')
 };
 
-// Logger
+// Logger System
 function logMessage(msg, type = 'info') {
     const time = new Date().toLocaleTimeString();
     console.log(`[${time}] [${type.toUpperCase()}] ${msg}`);
@@ -117,9 +116,9 @@ function logMessage(msg, type = 'info') {
     }
 }
 
-// Bootstrap
+// Bootstrap App
 document.addEventListener('DOMContentLoaded', () => {
-    logMessage('SkyFilter PRO Engine v4.2 Initialized.', 'success');
+    logMessage('SkyFilter PRO v4.3 Engine Ready.', 'success');
     loadHistoricalDatabase();
     initEvents();
 });
@@ -131,7 +130,6 @@ function loadHistoricalDatabase() {
         if (stored) {
             const arr = JSON.parse(stored);
             state.historicalUidSet = new Set(arr);
-            logMessage(`Loaded ${state.historicalUidSet.size.toLocaleString()} saved UIDs in History Memory.`, 'info');
         }
     } catch (e) {
         state.historicalUidSet = new Set();
@@ -160,12 +158,11 @@ function wipeAllHistoryDatabase() {
     state.historicalUidSet.clear();
     localStorage.removeItem(STORAGE_KEY_HISTORY);
     updateHistoryCountUI();
-    logMessage(`WIPED HISTORY: Cleared all ${oldCount.toLocaleString()} old saved UIDs from memory!`, 'warning');
+    logMessage(`WIPED HISTORY DB: Cleared ${oldCount.toLocaleString()} old saved UIDs from memory!`, 'warning');
     showToast(`Wiped ${oldCount.toLocaleString()} old UIDs from history database!`);
 
-    // If files are already loaded, automatically re-filter them so the user gets their data immediately!
     if (state.rawUploadedFiles.length > 0) {
-        logMessage(`Auto re-filtering ${state.rawUploadedFiles.length} file(s) with clean fresh memory...`, 'process');
+        logMessage(`Re-filtering ${state.rawUploadedFiles.length} file(s) with clean memory...`, 'process');
         reprocessCurrentFiles();
     }
 }
@@ -177,13 +174,11 @@ window.reprocessCurrentFiles = function() {
         return;
     }
     
-    // Reset session records but keep raw files
     state.records = [];
     state.activeUidSet.clear();
     state.loadedFileSignatures.clear();
     state.totalRawRowsUploaded = 0;
     state.duplicateUidsRemoved = 0;
-    state.skippedFilesCount = 0;
     state.deletedDeadCount = 0;
     state.loadedFiles = [];
     
@@ -338,7 +333,6 @@ function initEvents() {
             state.pastedDeadUids.clear();
             state.totalRawRowsUploaded = 0;
             state.duplicateUidsRemoved = 0;
-            state.skippedFilesCount = 0;
             state.deletedDeadCount = 0;
             state.loadedFiles = [];
             state.isStep1Completed = false;
@@ -451,14 +445,17 @@ async function processStep1Filtering() {
         try {
             const rawRows = await parseAnyFile(file);
             state.totalRawRowsUploaded += rawRows.length;
-            logMessage(`Parsed ${file.name}: ${rawRows.length.toLocaleString()} raw rows found.`, 'info');
+            logMessage(`Parsed '${file.name}': Found ${rawRows.length.toLocaleString()} rows.`, 'info');
             
             let fileUniqueCount = 0;
             let fileDupCount = 0;
 
             rawRows.forEach(record => {
                 const uid = record.uid;
+                
+                // Session duplicate check: only duplicate if seen in current session
                 const isDuplicateInSession = state.activeUidSet.has(uid);
+                // History duplicate check: ONLY if toggle is checked
                 const isDuplicateInHistory = filterFromHistory && state.historicalUidSet.has(uid);
 
                 if (isDuplicateInSession || isDuplicateInHistory) {
@@ -474,7 +471,7 @@ async function processStep1Filtering() {
                 }
             });
 
-            logMessage(`File '${file.name}': Added ${fileUniqueCount.toLocaleString()} unique rows. (${fileDupCount} duplicates skipped).`, 'success');
+            logMessage(`File '${file.name}': Added ${fileUniqueCount.toLocaleString()} unique rows. (${fileDupCount} duplicate UIDs skipped).`, 'success');
 
             state.loadedFiles.push({
                 name: file.name,
@@ -509,7 +506,7 @@ async function processStep1Filtering() {
 
     const c1000 = state.records.filter(r => r.series === '1000xxx' && !r.isDead).length;
     const c61 = state.records.filter(r => r.series === '61xxx' && !r.isDead).length;
-    logMessage(`Step 1 Completed: ${newUniqueAdded.toLocaleString()} unique active accounts sorted (1000xxx: ${c1000.toLocaleString()} | 61xxx: ${c61.toLocaleString()}).`, 'success');
+    logMessage(`Step 1 Completed: ${newUniqueAdded.toLocaleString()} unique accounts sorted (1000xxx: ${c1000.toLocaleString()} | 61xxx: ${c61.toLocaleString()}).`, 'success');
 
     let msg = `Step 1 Done! Filtered ${newUniqueAdded.toLocaleString()} unique accounts.`;
     if (newDuplicatesRemoved > 0) {
@@ -574,26 +571,14 @@ function readFileAsTextOrExcel(file) {
     });
 }
 
-// Universal parser
-async function parseAnyFile(file) {
-    const isExcel = file.name.endsWith('.xlsx') || file.name.endsWith('.xls');
-    if (isExcel) {
-        return parseExcelFile(file);
-    } else {
-        try {
-            const records = await parseTextFile(file);
-            if (records && records.length > 0) return records;
-        } catch (e) {}
-        return parseExcelFile(file);
-    }
-}
-
-function parseExcelFile(file) {
+// Universal SheetJS Multi-Format File Reader (.xlsx, .xls, .csv, .txt, .tsv)
+function parseAnyFile(file) {
     return new Promise((resolve, reject) => {
         const reader = new FileReader();
         reader.onload = (e) => {
             try {
                 const data = new Uint8Array(e.target.result);
+                // SheetJS handles xlsx, xls, csv, and delimited txt reliably via binary array
                 const workbook = XLSX.read(data, { type: 'array', raw: true });
                 const firstSheetName = workbook.SheetNames[0];
                 const worksheet = workbook.Sheets[firstSheetName];
@@ -612,7 +597,8 @@ function parseExcelFile(file) {
 
                 resolve(parsedRecords);
             } catch (error) {
-                reject(error);
+                // If SheetJS array read fails, attempt direct text split
+                parseTextFileFallback(file).then(resolve).catch(reject);
             }
         };
         reader.onerror = (err) => reject(err);
@@ -620,7 +606,7 @@ function parseExcelFile(file) {
     });
 }
 
-function parseTextFile(file) {
+function parseTextFileFallback(file) {
     return new Promise((resolve, reject) => {
         const reader = new FileReader();
         reader.onload = (e) => {
@@ -634,15 +620,9 @@ function parseTextFile(file) {
                     if (!line) return;
 
                     let parts = [line];
-                    if (line.includes('\t')) {
-                        parts = line.split('\t');
-                    } else if (line.includes('|')) {
-                        parts = line.split('|');
-                    } else if (line.includes(';') && line.split(';').length >= 3 && !line.startsWith('datr=')) {
-                        parts = line.split(';');
-                    } else if (line.includes(',') && !line.includes('datr=') && !line.includes('c_user=')) {
-                        parts = line.split(',');
-                    }
+                    if (line.includes('\t')) parts = line.split('\t');
+                    else if (line.includes('|')) parts = line.split('|');
+                    else if (line.includes(';') && !line.startsWith('datr=')) parts = line.split(';');
 
                     const strRow = parts.map(p => p.trim());
                     const record = extractRecordFromRow(strRow, file.name);
@@ -661,15 +641,27 @@ function parseTextFile(file) {
     });
 }
 
-// Extraction algorithm
+// ==========================================================================
+// ADVANCED SMART EXTRACTION: UID, PASSWORD & COOKIES
+// ==========================================================================
 function extractRecordFromRow(row, sourceFileName) {
+    // Clean all cells
+    const cells = row.map(c => String(c !== null && c !== undefined ? c : '').trim()).filter(c => c !== '');
+    if (cells.length === 0) return null;
+
+    // Check if this row is a header row (e.g. UID, Password, Cookies)
+    const firstCell = cells[0].toLowerCase();
+    if (firstCell === 'uid' || firstCell === 'user' || firstCell === 'account' || firstCell === 'id') {
+        return null;
+    }
+
     let uid = '';
     let pass = '';
     let cookies = '';
 
-    // Step 1: Check combo cell (UID|PASS|COOKIES or UID:PASS:COOKIES)
-    for (let i = 0; i < row.length; i++) {
-        const c_str = String(row[i]).trim();
+    // Step 1: Check if any single cell is a combo string (UID|PASS|COOKIES or UID:PASS:COOKIES)
+    for (let i = 0; i < cells.length; i++) {
+        const c_str = cells[i];
         if ((c_str.includes('|') || (c_str.includes(':') && c_str.includes('datr='))) && 
             (c_str.includes('datr=') || c_str.includes('c_user=') || c_str.includes('sb='))) {
             
@@ -693,35 +685,35 @@ function extractRecordFromRow(row, sourceFileName) {
 
     // Step 2: Multi-column extraction
     if (!uid || !cookies) {
-        const cells = row.map(c => String(c !== null && c !== undefined ? c : '').trim()).filter(c => c !== '');
-        
         let cookieIdx = -1;
         let uidIdx = -1;
 
-        // A. Locate Cookies
+        // A. Locate Cookies Column (Contains datr=, sb=, c_user=, xs=, m_pixel_ratio, or locale=)
         for (let i = 0; i < cells.length; i++) {
             const val = cells[i].toLowerCase();
-            if (val.includes('datr=') || val.includes('c_user=') || val.includes('xs=') || val.includes('sb=') || val.includes('m_pixel')) {
+            if (val.includes('datr=') || val.includes('c_user=') || val.includes('xs=') || val.includes('sb=') || val.includes('m_pixel') || val.includes('locale=')) {
                 cookies = cells[i];
                 cookieIdx = i;
                 break;
             }
         }
 
-        // B. Locate UID
+        // B. Locate True UID:
+        // Priority 1: Extract exact 10-18 digit UID from c_user= inside Cookies!
         let cUserUid = '';
         if (cookies) {
             const match = cookies.match(/c_user=(\d{10,18})/i);
             if (match) cUserUid = match[1];
         }
 
+        // Priority 2: Check cells for raw numeric 10-18 digits or scientific float (1.00031E+14)
         for (let i = 0; i < cells.length; i++) {
             if (i === cookieIdx) continue;
             const val = cells[i].replace(/\s+/g, '');
             if (/^\d{10,18}$/.test(val) || /^[0-9.]+[eE][+-]?[0-9]+$/.test(val)) {
                 uidIdx = i;
                 if (cUserUid) {
-                    uid = cUserUid;
+                    uid = cUserUid; // Always prefer exact c_user over rounded scientific notation
                 } else {
                     uid = cleanScientificNotation(val);
                 }
@@ -729,33 +721,38 @@ function extractRecordFromRow(row, sourceFileName) {
             }
         }
 
+        // Fallback: if no cell had numeric, use c_user from cookie
         if (!uid && cUserUid) {
             uid = cUserUid;
         }
 
-        // C. Locate Password
-        const candidates = [];
+        // C. Locate Real Password Column:
+        // Check all non-cookie, non-UID cells
         for (let i = 0; i < cells.length; i++) {
             if (i === cookieIdx || i === uidIdx) continue;
             const val = cells[i];
             const lower = val.toLowerCase();
+            
+            // Skip header names, series tags, and status words
             if (['1000xxx', '61xxx', 'others', 'uid', 'pass', 'password', 'cookies', 'series', 'active', 'dead', 'status'].includes(lower)) {
                 continue;
             }
-            candidates.push(val);
-        }
-
-        if (candidates.length > 0) {
-            const nonSerialCandidates = candidates.filter(c => !/^\d{1,4}$/.test(c));
-            if (nonSerialCandidates.length > 0) {
-                pass = nonSerialCandidates[0];
-            } else {
-                pass = '';
+            // Skip scientific numbers that represent the UID
+            if (/^[0-9.]+[eE][+-]?[0-9]+$/.test(val) || val === uid) {
+                continue;
             }
+            // Skip small 1-3 digit serial numbers (like '1', '2', '73', '74')
+            if (/^\d{1,3}$/.test(val)) {
+                continue;
+            }
+
+            // This is a real password! (e.g. 'Shovon@', 'Nobab15', 'Pass@123')
+            pass = val;
+            break;
         }
     }
 
-    // Determine Series
+    // Step 3: Classify Series (1000xxx vs 61xxx vs Others)
     let series = 'Others';
     if (uid.startsWith('1000')) {
         series = '1000xxx';
@@ -776,6 +773,7 @@ function extractRecordFromRow(row, sourceFileName) {
     };
 }
 
+// Convert scientific notation e.g. 1.00019E+14
 function cleanScientificNotation(val) {
     if (!val) return '';
     val = String(val).trim();
