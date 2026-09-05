@@ -1,15 +1,20 @@
 // ==========================================================================
-// SkyFilter PRO v4.4 - Universal Smart Core Engine
+// SkyFilter PRO v4.5 - Rock-Solid Persistent Deduplication & Universal Core
 // ==========================================================================
 
 const STORAGE_KEY_HISTORY = 'skyfilter_uid_history_db';
+const IDB_NAME = 'SkyFilterDB';
+const IDB_STORE = 'recorded_uids';
+const IDB_VERSION = 1;
+
+let idbDatabase = null;
 
 const state = {
     pendingFiles: [],            // Uploaded files in current batch
     rawUploadedFiles: [],        // Raw file objects
     records: [],                 // Active clean records
     activeUidSet: new Set(),     // Unique UIDs in current session
-    historicalUidSet: new Set(), // Persistent UID database
+    historicalUidSet: new Set(), // Persistent UID database (IndexedDB + RAM Set)
     loadedFileSignatures: new Set(),
     pastedDeadUids: new Set(),
     
@@ -55,6 +60,9 @@ const elements = {
     dbHistoryCount: document.getElementById('db-history-count'),
     btnClearHistory: document.getElementById('btn-clear-history'),
     btnClearHistoryStep1: document.getElementById('btn-clear-history-step1'),
+    btnExportDb: document.getElementById('btn-export-db'),
+    importDbInput: document.getElementById('import-db-input'),
+    btnImportDb: document.getElementById('btn-import-db'),
     toggleHistoryFilter: document.getElementById('toggle-history-filter'),
 
     statTotal: document.getElementById('stat-total'),
@@ -116,33 +124,108 @@ function logMessage(msg, type = 'info') {
     }
 }
 
-// Bootstrap
-document.addEventListener('DOMContentLoaded', () => {
-    logMessage('SkyFilter Universal Smart Engine v4.4 Ready.', 'success');
-    loadHistoricalDatabase();
-    initEvents();
-});
-
-// Load persistent UID history
-function loadHistoricalDatabase() {
-    try {
-        const stored = localStorage.getItem(STORAGE_KEY_HISTORY);
-        if (stored) {
-            const arr = JSON.parse(stored);
-            state.historicalUidSet = new Set(arr);
-        }
-    } catch (e) {
-        state.historicalUidSet = new Set();
-    }
-    updateHistoryCountUI();
+// ==========================================================================
+// INDEXEDDB ENGINE - UNLIMITED PERSISTENT STORAGE
+// ==========================================================================
+function initIndexedDB() {
+    return new Promise((resolve, reject) => {
+        const req = indexedDB.open(IDB_NAME, IDB_VERSION);
+        req.onupgradeneeded = (e) => {
+            const db = e.target.result;
+            if (!db.objectStoreNames.contains(IDB_STORE)) {
+                db.createObjectStore(IDB_STORE, { keyPath: 'uid' });
+            }
+        };
+        req.onsuccess = (e) => {
+            idbDatabase = e.target.result;
+            resolve(idbDatabase);
+        };
+        req.onerror = (e) => {
+            console.error('IndexedDB open error:', e);
+            resolve(null);
+        };
+    });
 }
 
-function saveHistoricalDatabase() {
+async function loadHistoricalDatabase() {
     try {
-        const arr = Array.from(state.historicalUidSet);
-        if (arr.length > 500000) arr.splice(0, arr.length - 500000);
-        localStorage.setItem(STORAGE_KEY_HISTORY, JSON.stringify(arr));
+        await initIndexedDB();
+        
+        // 1. Load from IndexedDB
+        if (idbDatabase) {
+            const tx = idbDatabase.transaction(IDB_STORE, 'readonly');
+            const store = tx.objectStore(IDB_STORE);
+            const req = store.getAllKeys();
+            
+            await new Promise((resolve) => {
+                req.onsuccess = () => {
+                    const keys = req.result || [];
+                    keys.forEach(k => state.historicalUidSet.add(String(k)));
+                    resolve();
+                };
+                req.onerror = () => resolve();
+            });
+        }
+
+        // 2. Migrate from localStorage if present
+        try {
+            const stored = localStorage.getItem(STORAGE_KEY_HISTORY);
+            if (stored) {
+                const arr = JSON.parse(stored);
+                if (Array.isArray(arr) && arr.length > 0) {
+                    const toPersist = [];
+                    arr.forEach(u => {
+                        const strU = String(u).trim();
+                        if (strU && !state.historicalUidSet.has(strU)) {
+                            state.historicalUidSet.add(strU);
+                            toPersist.push(strU);
+                        }
+                    });
+                    if (toPersist.length > 0) {
+                        await saveNewRecordedUids(toPersist);
+                    }
+                }
+            }
+        } catch (err) {}
+
+        updateHistoryCountUI();
+        logMessage(`Loaded ${state.historicalUidSet.size.toLocaleString()} recorded UIDs into active memory. Auto-Deduplication is ACTIVE!`, 'success');
+    } catch (e) {
+        console.error('Error loading history DB:', e);
+    }
+}
+
+async function saveNewRecordedUids(newUids) {
+    if (!newUids || newUids.length === 0) return;
+
+    // Save to IndexedDB
+    if (idbDatabase) {
+        try {
+            const chunkSize = 2000;
+            for (let i = 0; i < newUids.length; i += chunkSize) {
+                const chunk = newUids.slice(i, i + chunkSize);
+                const tx = idbDatabase.transaction(IDB_STORE, 'readwrite');
+                const store = tx.objectStore(IDB_STORE);
+                chunk.forEach(uid => {
+                    store.put({ uid: String(uid), addedAt: Date.now() });
+                });
+                await new Promise(res => {
+                    tx.oncomplete = () => res();
+                    tx.onerror = () => res();
+                });
+            }
+        } catch (e) {
+            console.error('Failed writing to IndexedDB:', e);
+        }
+    }
+
+    // Backup to localStorage (if under 200k UIDs to prevent quota crash)
+    try {
+        if (state.historicalUidSet.size <= 200000) {
+            localStorage.setItem(STORAGE_KEY_HISTORY, JSON.stringify(Array.from(state.historicalUidSet)));
+        }
     } catch (e) {}
+
     updateHistoryCountUI();
 }
 
@@ -152,18 +235,86 @@ function updateHistoryCountUI() {
     }
 }
 
-// WIPE ALL OLD UID HISTORY
-function wipeAllHistoryDatabase() {
+// WIPE ALL HISTORY DATABASE
+async function wipeAllHistoryDatabase() {
     const oldCount = state.historicalUidSet.size;
     state.historicalUidSet.clear();
-    localStorage.removeItem(STORAGE_KEY_HISTORY);
+    
+    // Clear IndexedDB
+    if (idbDatabase) {
+        try {
+            const tx = idbDatabase.transaction(IDB_STORE, 'readwrite');
+            tx.objectStore(IDB_STORE).clear();
+            await new Promise(r => { tx.oncomplete = () => r(); tx.onerror = () => r(); });
+        } catch (e) {}
+    }
+
+    // Clear localStorage
+    try {
+        localStorage.removeItem(STORAGE_KEY_HISTORY);
+    } catch (e) {}
+
     updateHistoryCountUI();
-    logMessage(`WIPED HISTORY: Cleared ${oldCount.toLocaleString()} old saved UIDs from memory!`, 'warning');
+    logMessage(`WIPED HISTORY: Cleared all ${oldCount.toLocaleString()} old saved UIDs from memory!`, 'warning');
     showToast(`Wiped ${oldCount.toLocaleString()} old UIDs from history database!`);
 
     if (state.rawUploadedFiles.length > 0) {
         logMessage(`Re-filtering ${state.rawUploadedFiles.length} file(s) with clean memory...`, 'process');
         reprocessCurrentFiles();
+    }
+}
+
+// EXPORT DATABASE BACKUP
+function exportRecordedUidsDB() {
+    const total = state.historicalUidSet.size;
+    if (total === 0) {
+        showToast('Recorded UID Database is currently empty.', 'warning');
+        return;
+    }
+
+    const uids = Array.from(state.historicalUidSet);
+    const content = uids.join('\n');
+    const blob = new Blob([content], { type: 'text/plain;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `SkyFilter_Recorded_UIDs_${new Date().toISOString().slice(0,10)}_${total}pcs.txt`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+
+    logMessage(`Exported backup of ${total.toLocaleString()} recorded UIDs to text file.`, 'success');
+    showToast(`Exported ${total.toLocaleString()} UIDs successfully!`);
+}
+
+// IMPORT EXTERNAL UIDS INTO DB
+async function importUidsIntoDB(file) {
+    try {
+        logMessage(`Importing past UIDs from '${file.name}' into Database...`, 'process');
+        const text = await readFileAsTextOrExcel(file);
+        const uids = extractUidsFromText(text);
+        
+        let addedCount = 0;
+        const toPersist = [];
+        uids.forEach(uid => {
+            if (!state.historicalUidSet.has(uid)) {
+                state.historicalUidSet.add(uid);
+                toPersist.push(uid);
+                addedCount++;
+            }
+        });
+
+        if (toPersist.length > 0) {
+            await saveNewRecordedUids(toPersist);
+        }
+
+        logMessage(`Database Import Done: Added ${addedCount.toLocaleString()} new UIDs. Total recorded DB: ${state.historicalUidSet.size.toLocaleString()} UIDs.`, 'success');
+        showToast(`Imported ${addedCount.toLocaleString()} new UIDs into Database!`);
+    } catch (e) {
+        logMessage(`Failed to import UIDs from ${file.name}: ${e}`, 'error');
+        showToast(`Failed to import UIDs: ${e.message || e}`, 'error');
     }
 }
 
@@ -186,6 +337,9 @@ window.reprocessCurrentFiles = function() {
     processStep1Filtering();
 };
 
+// ==========================================================================
+// EVENT LISTENERS
+// ==========================================================================
 function initEvents() {
     // Dropzone Click
     elements.dropzone.addEventListener('click', (e) => {
@@ -265,7 +419,7 @@ function initEvents() {
     // WIPE HISTORY BUTTONS
     if (elements.btnClearHistory) {
         elements.btnClearHistory.addEventListener('click', () => {
-            if (confirm(`Wipe all ${state.historicalUidSet.size.toLocaleString()} old saved UIDs from history database memory?`)) {
+            if (confirm(`Wipe all ${state.historicalUidSet.size.toLocaleString()} recorded UIDs from history database?`)) {
                 wipeAllHistoryDatabase();
             }
         });
@@ -273,8 +427,24 @@ function initEvents() {
 
     if (elements.btnClearHistoryStep1) {
         elements.btnClearHistoryStep1.addEventListener('click', () => {
-            if (confirm(`Wipe all ${state.historicalUidSet.size.toLocaleString()} old saved UIDs from history database memory?`)) {
+            if (confirm(`Wipe all ${state.historicalUidSet.size.toLocaleString()} recorded UIDs from history database?`)) {
                 wipeAllHistoryDatabase();
+            }
+        });
+    }
+
+    // EXPORT & IMPORT DB BUTTONS
+    if (elements.btnExportDb) {
+        elements.btnExportDb.addEventListener('click', () => {
+            exportRecordedUidsDB();
+        });
+    }
+
+    if (elements.importDbInput) {
+        elements.importDbInput.addEventListener('change', async (e) => {
+            if (e.target.files && e.target.files.length > 0) {
+                await importUidsIntoDB(e.target.files[0]);
+                elements.importDbInput.value = '';
             }
         });
     }
@@ -324,7 +494,7 @@ function initEvents() {
 
     // Reset Session
     elements.btnClearAll.addEventListener('click', () => {
-        if (confirm('Reset current session files, filters, and dead lists? (Saved History DB is kept safe unless wiped)')) {
+        if (confirm('Reset current session files, preview table, and dead lists? (Saved History DB is kept safe)')) {
             state.pendingFiles = [];
             state.rawUploadedFiles = [];
             state.records = [];
@@ -350,7 +520,7 @@ function initEvents() {
             updateStatsAndCounts();
             updateDeadMatchingState();
             renderTable();
-            logMessage('Session reset: All active tables, metrics, and queues cleared.', 'warning');
+            logMessage('Session reset: Active session tables cleared. (Database memory intact)', 'warning');
             showToast('Session reset.');
         }
     });
@@ -419,7 +589,9 @@ window.removeUploadedFile = function(index) {
     }
 };
 
-// Execute Step 1 Filtering
+// ==========================================================================
+// STEP 1 - FILTERING & AUTOMATIC DEDUPLICATION
+// ==========================================================================
 async function processStep1Filtering() {
     const files = [...state.pendingFiles];
     if (files.length === 0) return;
@@ -433,7 +605,10 @@ async function processStep1Filtering() {
 
     let newUniqueAdded = 0;
     let newDuplicatesRemoved = 0;
-    const filterFromHistory = elements.toggleHistoryFilter.checked;
+    
+    // Auto-Deduplication: ALWAYS ACTIVE unless explicitly unchecked by user
+    const filterAgainstHistory = elements.toggleHistoryFilter ? elements.toggleHistoryFilter.checked : true;
+    const newUidsToPersist = [];
 
     for (let i = 0; i < files.length; i++) {
         const file = files[i];
@@ -445,31 +620,37 @@ async function processStep1Filtering() {
         try {
             const rawRows = await parseAnyFile(file);
             state.totalRawRowsUploaded += rawRows.length;
-            logMessage(`Parsed '${file.name}': Found ${rawRows.length.toLocaleString()} rows.`, 'info');
+            logMessage(`Parsed '${file.name}': Extracted ${rawRows.length.toLocaleString()} raw rows.`, 'info');
             
             let fileUniqueCount = 0;
             let fileDupCount = 0;
 
             rawRows.forEach(record => {
                 const uid = record.uid;
+                if (!uid) return;
                 
-                const isDuplicateInSession = state.activeUidSet.has(uid);
-                const isDuplicateInHistory = filterFromHistory && state.historicalUidSet.has(uid);
+                // CRITICAL DEDUPLICATION:
+                // 1. Seen in current session?
+                const isDupInSession = state.activeUidSet.has(uid);
+                // 2. Already recorded in 39k+ Persistent Database?
+                const isDupInHistory = filterAgainstHistory && state.historicalUidSet.has(uid);
 
-                if (isDuplicateInSession || isDuplicateInHistory) {
+                if (isDupInSession || isDupInHistory) {
                     newDuplicatesRemoved++;
                     fileDupCount++;
                     state.duplicateUidsRemoved++;
+                    // DO NOT ADD TO ACTIVE RECORDS!
                 } else {
                     state.activeUidSet.add(uid);
                     state.historicalUidSet.add(uid);
+                    newUidsToPersist.push(uid);
                     state.records.push(record);
                     fileUniqueCount++;
                     newUniqueAdded++;
                 }
             });
 
-            logMessage(`File '${file.name}': Added ${fileUniqueCount.toLocaleString()} unique rows. (${fileDupCount} duplicate UIDs skipped).`, 'success');
+            logMessage(`File '${file.name}': Added ${fileUniqueCount.toLocaleString()} unique rows. (${fileDupCount.toLocaleString()} duplicate UIDs auto-removed).`, 'success');
 
             state.loadedFiles.push({
                 name: file.name,
@@ -487,7 +668,10 @@ async function processStep1Filtering() {
         await new Promise(res => setTimeout(res, 5));
     }
 
-    saveHistoricalDatabase();
+    // Persist all newly seen unique UIDs into IndexedDB
+    if (newUidsToPersist.length > 0) {
+        await saveNewRecordedUids(newUidsToPersist);
+    }
 
     setTimeout(() => {
         elements.uploadProgressContainer.classList.add('hidden');
@@ -504,11 +688,11 @@ async function processStep1Filtering() {
 
     const c1000 = state.records.filter(r => r.series === '1000xxx' && !r.isDead).length;
     const c61 = state.records.filter(r => r.series === '61xxx' && !r.isDead).length;
-    logMessage(`Step 1 Completed: ${newUniqueAdded.toLocaleString()} unique accounts sorted (1000xxx: ${c1000.toLocaleString()} | 61xxx: ${c61.toLocaleString()}).`, 'success');
+    logMessage(`Step 1 Complete: ${newUniqueAdded.toLocaleString()} unique active accounts sorted (1000xxx: ${c1000.toLocaleString()} | 61xxx: ${c61.toLocaleString()}). Total Duplicates Blocked: ${newDuplicatesRemoved.toLocaleString()}`, 'success');
 
     let msg = `Step 1 Done! Filtered ${newUniqueAdded.toLocaleString()} unique accounts.`;
     if (newDuplicatesRemoved > 0) {
-        msg += ` (${newDuplicatesRemoved.toLocaleString()} duplicates removed)`;
+        msg += ` (${newDuplicatesRemoved.toLocaleString()} duplicate UIDs removed)`;
     }
     showToast(msg);
 }
@@ -681,7 +865,7 @@ function extractRecordFromRow(row, sourceFileName) {
         }
     }
 
-    // Step 2: Multi-Column Parsing (1-column, 2-column UID+COOKIES, 3-column UID+PASS+COOKIES, etc.)
+    // Step 2: Multi-Column Parsing
     if (!uid || !cookies) {
         let cookieIdx = -1;
         let uidIdx = -1;
@@ -695,15 +879,13 @@ function extractRecordFromRow(row, sourceFileName) {
             }
         }
 
-        // B. Extract True UID:
-        // Priority 1: Exact 10-18 digit integer from c_user= inside Cookies
+        // B. Extract True UID
         let cUserUid = '';
         if (cookies) {
             const match = cookies.match(/c_user=(\d{10,18})/i);
             if (match) cUserUid = match[1];
         }
 
-        // Priority 2: Check remaining cells for numeric UID or scientific float
         for (let i = 0; i < cells.length; i++) {
             if (i === cookieIdx) continue;
             const val = cells[i].replace(/\s+/g, '');
@@ -723,8 +905,7 @@ function extractRecordFromRow(row, sourceFileName) {
             uid = cUserUid;
         }
 
-        // C. Extract Real Password:
-        // Look at remaining non-cookie, non-UID cells
+        // C. Extract Real Password
         for (let i = 0; i < cells.length; i++) {
             if (i === cookieIdx || i === uidIdx) continue;
             const val = cells[i];
@@ -1114,3 +1295,9 @@ function escapeHtml(text) {
         .replace(/"/g, '&quot;')
         .replace(/'/g, '&#039;');
 }
+// Bootstrap App
+document.addEventListener('DOMContentLoaded', () => {
+    logMessage('SkyFilter PRO Engine v4.5 Initializing with IndexedDB...', 'process');
+    loadHistoricalDatabase();
+    initEvents();
+});

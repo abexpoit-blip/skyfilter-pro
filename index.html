@@ -31,18 +31,25 @@
             </div>
 
             <div class="top-nav-controls">
-                <!-- History DB Counter & WIPE Button -->
+                <!-- History DB Counter & Controls -->
                 <div class="history-db-control">
                     <i class="fa-solid fa-database icon-sky"></i>
-                    <span>Saved UID History: <strong id="db-history-count" class="text-warning">0</strong></span>
-                    <button id="btn-clear-history" class="btn-wipe-history" title="Delete all old saved UIDs from history memory">
-                        <i class="fa-solid fa-trash-can"></i> Wipe All History DB
+                    <span>Recorded DB: <strong id="db-history-count" class="text-warning">0</strong> UIDs</span>
+                    <button id="btn-export-db" class="btn-xs-action" title="Export all recorded UIDs to .txt backup file">
+                        <i class="fa-solid fa-download"></i> Backup DB
+                    </button>
+                    <input type="file" id="import-db-input" accept=".txt,.csv,.xlsx,.xls" style="display:none;">
+                    <button id="btn-import-db" class="btn-xs-action" title="Import past UIDs into database" onclick="document.getElementById('import-db-input').click()">
+                        <i class="fa-solid fa-upload"></i> Import DB
+                    </button>
+                    <button id="btn-clear-history" class="btn-wipe-history" title="Delete all saved UIDs from history database">
+                        <i class="fa-solid fa-trash-can"></i> Wipe DB
                     </button>
                 </div>
 
                 <div class="status-indicator">
                     <span class="pulse-dot"></span>
-                    <span>Port 3000 Ready</span>
+                    <span>Online 24/7</span>
                 </div>
 
                 <button id="btn-clear-all" class="btn-sky-outline-danger" title="Clear current session data">
@@ -114,14 +121,14 @@
                         <h3>Upload &amp; Filter Excel Sheets</h3>
                     </div>
                     <div class="header-right-tools">
-                        <button id="btn-clear-history-step1" class="btn-xs-danger" title="Wipe Old Saved UID Database">
-                            <i class="fa-solid fa-trash-can"></i> Wipe History
-                        </button>
-                        <label class="toggle-switch-label" title="When ON, skips UIDs seen in previous uploads. When OFF, processes all rows in current files.">
-                            <input type="checkbox" id="toggle-history-filter">
+                        <label class="toggle-switch-label" title="Always ON: Automatically removes any UID that has already been recorded in database or current session.">
+                            <input type="checkbox" id="toggle-history-filter" checked>
                             <span class="switch-slider"></span>
-                            <span class="switch-text">History Memory Filter</span>
+                            <span class="switch-text"><i class="fa-solid fa-shield-halved"></i> Auto-Remove Duplicate UIDs</span>
                         </label>
+                        <button id="btn-clear-history-step1" class="btn-xs-danger" title="Wipe Saved UID Database">
+                            <i class="fa-solid fa-trash-can"></i> Wipe DB
+                        </button>
                     </div>
                 </div>
 

@@ -208,6 +208,27 @@ body.theme-skyblue {
     box-shadow: 0 0 16px rgba(239, 68, 68, 0.6);
 }
 
+.btn-xs-action {
+    background: rgba(56, 189, 248, 0.2);
+    border: 1px solid rgba(56, 189, 248, 0.45);
+    color: #7dd3fc;
+    font-size: 11px;
+    font-weight: 700;
+    padding: 4px 10px;
+    border-radius: 12px;
+    cursor: pointer;
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    transition: var(--transition);
+}
+.btn-xs-action:hover {
+    background: var(--sky-500);
+    color: #021a36;
+    transform: translateY(-1px);
+    box-shadow: 0 0 12px var(--sky-glow);
+}
+
 .btn-xs-danger {
     background: rgba(239, 68, 68, 0.25);
     border: 1px solid rgba(239, 68, 68, 0.5);
