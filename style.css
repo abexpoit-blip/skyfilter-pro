@@ -1247,3 +1247,68 @@ body.theme-skyblue {
 }
 .toast-icon { color: var(--sky-400); font-size: 16px; }
 .hidden { display: none !important; }
+
+/* ==========================================================================
+   SkyFilter PRO v5.0 — Additional Styles
+   ========================================================================== */
+
+/* Source File Label in Table */
+.src-file-label {
+    display: inline-block;
+    max-width: 128px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font-size: 0.72rem;
+    color: var(--text-muted);
+    background: rgba(56,189,248,0.07);
+    border: 1px solid rgba(56,189,248,0.18);
+    border-radius: 5px;
+    padding: 2px 7px;
+    font-family: var(--font-mono);
+    cursor: default;
+    vertical-align: middle;
+}
+
+/* Password cell with copy button */
+.pass-cell {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    font-family: var(--font-mono);
+    font-size: 0.82rem;
+    font-weight: 500;
+    color: #bae6fd;
+}
+.pass-value {
+    max-width: 120px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    display: inline-block;
+}
+.btn-copy-pass {
+    opacity: 0;
+    transition: opacity 0.15s;
+}
+.pass-cell:hover .btn-copy-pass {
+    opacity: 1;
+}
+
+/* Dead row — improved red highlight */
+tr.row-dead {
+    background: rgba(239, 68, 68, 0.10) !important;
+}
+tr.row-dead td {
+    border-color: rgba(239, 68, 68, 0.25) !important;
+    color: rgba(255,255,255,0.55) !important;
+    text-decoration: line-through;
+    text-decoration-color: rgba(239,68,68,0.5);
+}
+tr.row-dead .badge-status.dead {
+    background: rgba(239, 68, 68, 0.25);
+    border-color: rgba(239,68,68,0.6);
+    color: #fca5a5;
+}
+
+/* Version tag update */
